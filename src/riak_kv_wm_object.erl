@@ -532,7 +532,7 @@ extract_index_fields(RD) ->
                         Acc
                 end
         end,
-    lists:foldl(F, [], mochiweb_headers:to_list(wrq:req_headers(RD))).
+    lists:foldl(F, [], wrq:req_headers_to_list(RD)).
 
 %% @spec content_types_provided(reqdata(), context()) ->
 %%          {[{ContentType::string(), Producer::atom()}], reqdata(), context()}
@@ -801,7 +801,7 @@ extract_user_meta(RD) ->
                         ?HEAD_USERMETA_PREFIX,
                         string:to_lower(riak_kv_wm_utils:any_to_list(K)))
                 end,
-                mochiweb_headers:to_list(wrq:req_headers(RD))).
+                wrq:req_headers_to_list(RD)).
 
 %% @spec multiple_choices(reqdata(), context()) ->
 %%          {boolean(), reqdata(), context()}

@@ -103,8 +103,8 @@ multipart_encode_body(Prefix, Bucket, {MD, V}, APIVersion) ->
                  error -> []
              end,
     Links2 = format_links([{Bucket, "up"}|Links1], Prefix, APIVersion),
-    Links3 = mochiweb_headers:make(Links2),
-    [{?HEAD_LINK, Links4}] = mochiweb_headers:to_list(Links3),
+    Links3 = webmachine_ws:make_headers(Links2),
+    [{?HEAD_LINK, Links4}] = webmachine_ws:headers_to_list(Links3),
 
     [?HEAD_CTYPE, ": ",get_ctype(MD,V),
      case dict:find(?MD_CHARSET, MD) of
