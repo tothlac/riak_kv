@@ -35,6 +35,7 @@
          cluster_info/1,
          down/1,
          aae_status/1,
+         repair_2i/1,
          reformat_indexes/1,
          reformat_objects/1,
          reload_code/1]).
@@ -436,9 +437,80 @@ run_reformat(M, F, A) ->
                         [Err, Reason])
     end.
 
+repair_2i(Args) ->
+    case parse_repair_2i_args(Args) of
+        {ok, IdxList, DutyCycle} ->
+            io:format("Will repair 2i on these partitions:\n", []),
+            [io:format("\t~p\n", [Idx]) || Idx <- IdxList],
+            riak_kv_2i_aae:start_partition_repair(IdxList, DutyCycle),
+            io:format("Watch the logs for 2i repair progress reports\n", []);
+        {error, Reason} ->
+            io:format("Error: ~p\n", [Reason]),
+            io:format("Usage: riak-admin repair-2i [--speed [1-100]] <Idx> ...\n", []),
+            io:format("Speed defaults to 100 (full speed).\n", []),
+            io:format("If no partitions are given, all partitions in the\n" ++
+                      "node are repaired.\n", []),
+            ok
+    end.
+
+
 %%%===================================================================
 %%% Private
 %%%===================================================================
+
+parse_repair_2i_args(["--speed", DutyCycleStr | Partitions]) ->
+    DutyCycle = parse_int(DutyCycleStr),
+    case DutyCycle of
+        undefined ->
+            {error, io_lib:format("Invalid speed value (~s). It should be a " ++
+                                  "number between 1 and 100",
+                                  [DutyCycleStr])};
+        _ ->
+            parse_repair_2i_args(DutyCycle, Partitions)
+    end;
+parse_repair_2i_args(Partitions) ->
+    parse_repair_2i_args(100, Partitions).
+
+parse_repair_2i_args(DutyCycle, Partitions) ->
+    case get_2i_repair_indexes(Partitions) of
+        {ok, IdxList} ->
+            {ok, IdxList, DutyCycle};
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+get_2i_repair_indexes([]) ->
+    AllVNodes = riak_core_vnode_manager:all_vnodes(),
+    {ok, [Idx || {riak_kv_vnode, Idx, _} <- AllVNodes]};
+get_2i_repair_indexes(IntStrs) ->
+    {ok, NodeIdxList} = get_2i_repair_indexes([]),
+    F =
+    fun(_, {error, Reason}) ->
+            {error, Reason};
+       (IntStr, Acc) ->
+            case parse_int(IntStr) of
+                undefined ->
+                    {error, io_lib:format("~s is not an integer\n", [IntStr])};
+                Int ->
+                    case lists:member(Int, NodeIdxList) of
+                        true ->
+                            Acc ++ [Int];
+                        false ->
+                            {error,
+                             io_lib:format("Partition ~p does not belong"
+                                           ++ " to this node\n",
+                                           [Int])}
+                    end
+            end
+    end,
+    IdxList = lists:foldl(F, [], IntStrs),
+    case IdxList of
+        {error, Reason} ->
+            {error, Reason};
+        _ ->
+            {ok, IdxList}
+    end.
+
 format_stats([], Acc) ->
     lists:reverse(Acc);
 format_stats([{Stat, V}|T], Acc) ->
