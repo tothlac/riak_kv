@@ -95,7 +95,7 @@ capabilities(_, _) ->
 
 %% @doc Start the memory backend
 -spec start(integer(), config()) -> {ok, state()}.
-start(Partition, Config) ->
+start(Partition, [_AsyncParam, Config]) ->
     TTL = riak_kv_util:get_backend_config(ttl, Config, memory_backend),
     MemoryMB = riak_kv_util:get_backend_config(max_memory, Config, memory_backend),
     case MemoryMB of
