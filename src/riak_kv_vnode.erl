@@ -554,15 +554,15 @@ terminate(_Reason, #state{mod=Mod, modstate=ModState}) ->
 
 handle_info({final_delete, BKey, RObjHash}, State = #state{mod=Mod, modstate=ModState}) ->
     UpdState = case do_get_term(BKey, Mod, ModState) of
-                   {ok, RObj} ->
+                   {{ok, RObj}, ModState1} ->
                        case delete_hash(RObj) of
                            RObjHash ->
-                               do_backend_delete(BKey, RObj, State);
+                               do_backend_delete(BKey, RObj, State#state{modstate=ModState1});
                          _ ->
                                State
                        end;
-                   _ ->
-                       State
+                   {{error, _}, ModState1} ->
+                       State#state{modstate=ModState1}
                end,
     {ok, UpdState}.
 
@@ -809,7 +809,7 @@ do_get(_Sender, BKey, ReqID,
 
 do_mget({fsm, Sender}, BKeys, ReqId, State=#state{idx=Idx, mod=Mod, modstate=ModState}) ->
     F = fun(BKey) ->
-                R = do_get_term(BKey, Mod, ModState),
+                {R, _MS} = do_get_term(BKey, Mod, ModState),
                 case R of
                     {ok, Obj} ->
                         gen_fsm:send_event(Sender, {r, Obj, Idx, ReqId});
@@ -957,16 +957,17 @@ do_delete(BKey, ReqId, State) ->
 
     %% Get the existing object.
     case do_get_term(BKey, Mod, ModState) of
-        {ok, RObj} ->
+        {{ok, RObj}, ModState1} ->
             %% Object exists, check if it should be deleted.
             case riak_kv_util:obj_not_deleted(RObj) of
                 undefined ->
                     case DeleteMode of
                         keep ->
                             %% keep tombstones indefinitely
-                            {reply, {fail, Idx, ReqId}, State};
+                            {reply, {fail, Idx, ReqId}, State#state{modstate=ModState1}};
                         immediate ->
-                            UpdState = do_backend_delete(BKey, RObj, State),
+                            UpdState = do_backend_delete(BKey, RObj, 
+                                                         State#state{modstate=ModState1}),
                             {reply, {del, Idx, ReqId}, UpdState};
                         Delay when is_integer(Delay) ->
                             erlang:send_after(Delay, self(), 
@@ -974,7 +975,7 @@ do_delete(BKey, ReqId, State) ->
                                                delete_hash(RObj)}),
                             %% Nothing checks these messages - will just reply
                             %% del for now until we can refactor.
-                            {reply, {del, Idx, ReqId}, State}
+                            {reply, {del, Idx, ReqId}, State#state{modstate=ModState1}}
                     end;
                 _ ->
                     %% not a tombstone or not all siblings are tombstones
