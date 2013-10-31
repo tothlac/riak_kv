@@ -803,9 +803,9 @@ put_merge(true, false, CurObj, UpdObj, VId, StartTime) ->
 %% @private
 do_get(_Sender, BKey, ReqID,
        State=#state{idx=Idx,mod=Mod,modstate=ModState}) ->
-    Retval = do_get_term(BKey, Mod, ModState),
+    {Retval, ModState1} = do_get_term(BKey, Mod, ModState),
     riak_kv_stat:update(vnode_get),
-    {reply, {r, Retval, Idx, ReqID}, State}.
+    {reply, {r, Retval, Idx, ReqID}, State#state{modstate=ModState1}}.
 
 do_mget({fsm, Sender}, BKeys, ReqId, State=#state{idx=Idx, mod=Mod, modstate=ModState}) ->
     F = fun(BKey) ->
@@ -823,15 +823,15 @@ do_mget({fsm, Sender}, BKeys, ReqId, State=#state{idx=Idx, mod=Mod, modstate=Mod
 %% @private
 do_get_term(BKey, Mod, ModState) ->
     case do_get_binary(BKey, Mod, ModState) of
-        {ok, Bin, _UpdModState} ->
-            {ok, binary_to_term(Bin)};
+        {ok, Bin, UpdModState} ->
+            {{ok, binary_to_term(Bin)}, UpdModState};
         %% @TODO Eventually it would be good to
         %% make the use of not_found or notfound
         %% consistent throughout the code.
-        {error, not_found, _UpdatedModstate} ->
-            {error, notfound};
-        {error, Reason, _UpdatedModstate} ->
-            {error, Reason};
+        {error, not_found, UpdModState} ->
+            {{error, notfound}, UpdModState};
+        {error, Reason, UpdModState} ->
+            {{error, Reason}, UpdModState};
         Err ->
             Err
     end.

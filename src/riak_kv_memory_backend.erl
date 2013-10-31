@@ -96,6 +96,8 @@ capabilities(_, _) ->
 %% @doc Start the memory backend
 -spec start(integer(), config()) -> {ok, state()}.
 start(Partition, [_AsyncParam, Config]) ->
+    start(Partition, Config);
+start(Partition, Config) ->
     TTL = riak_kv_util:get_backend_config(ttl, Config, memory_backend),
     MemoryMB = riak_kv_util:get_backend_config(max_memory, Config, memory_backend),
     case MemoryMB of
@@ -140,9 +142,6 @@ get(Bucket, Key, State=#state{data_ref=DataRef,
         [{{Bucket, Key}, {{ts, Timestamp}, Val}}=Object] ->
             case exceeds_ttl(Timestamp, TTL) of
                 true ->
-                    %% Because we do not have the IndexSpecs, we must
-                    %% delete the object directly and all index
-                    %% entries blindly using match_delete.
                     ets:delete(DataRef, {Bucket, Key}),
                     case MaxMemory of
                         undefined ->
