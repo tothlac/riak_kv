@@ -95,7 +95,7 @@ capabilities(_, _) ->
 
 %% @doc Start the memory backend
 -spec start(integer(), config()) -> {ok, state()}.
-start(Partition, [_AsyncParam, Config]) ->
+start(Partition, [{async_folding, _AsyncParam}, Config]) ->
     start(Partition, Config);
 start(Partition, Config) ->
     TTL = riak_kv_util:get_backend_config(ttl, Config, memory_backend),
