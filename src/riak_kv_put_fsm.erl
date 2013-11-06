@@ -167,10 +167,14 @@ get_put_coordinator_failure_timeout() ->
     app_helper:get_env(riak_kv, put_coordinator_failure_timeout, 3000).
 
 make_ack_options(Options) ->
-    case riak_core_capability:get({riak_kv, put_fsm_ack_execute}, disabled) of
-        disabled ->
+    case (riak_core_capability:get(
+            {riak_kv, put_fsm_ack_execute}, disabled) == disabled
+          orelse
+          app_helper:get_env(
+            riak_kv, retry_put_coordinator_failure, on) == off) of
+        true ->
             {false, Options};
-        enabled ->
+        false ->
             case proplists:get_value(retry_put_coordinator_failure, Options, true) of
                 true ->
                     {true, [{ack_execute, self()}|Options]};
@@ -699,7 +703,7 @@ handle_options([], State) ->
 handle_options([{update_last_modified, false}|T], State) ->
     handle_options(T, State);
 handle_options([{update_last_modified, true}|T], State = #state{robj = RObj}) ->
-    handle_options(T, State#state{robj = update_last_modified(RObj)});
+    handle_options(T, State#state{robj = riak_object:update_last_modified(RObj)});
 handle_options([{returnbody, true}|T], State) ->
     VnodeOpts = [{returnbody, true} | State#state.vnode_options],
     %% Force DW>0 if requesting return body to ensure the dw event
@@ -722,6 +726,9 @@ handle_options([{returnbody, false}|T], State = #state{postcommit = Postcommit})
                                           dw=erlang:max(1,State#state.dw),
                                           returnbody=false})
     end;
+handle_options([{counter_op, _Amt}=COP|T], State) ->
+    VNodeOpts = [COP | State#state.vnode_options],
+    handle_options(T, State#state{vnode_options=VNodeOpts});
 handle_options([{crdt_op, _Op}=COP|T], State) ->
     VNodeOpts = [COP | State#state.vnode_options],
     handle_options(T, State#state{vnode_options=VNodeOpts});
@@ -745,42 +752,6 @@ init_putcore(State = #state{n = N, w = W, pw = PW, dw = DW, allowmult = AllowMul
 %% Apply any pending updates to robj
 apply_updates(State = #state{robj = RObj}) ->
     State#state{robj = riak_object:apply_updates(RObj)}.
-
-%%
-%% Update X-Riak-VTag and X-Riak-Last-Modified in the object's metadata, if
-%% necessary.
-%%
-%% @private
-update_last_modified(RObj) ->
-    MD0 = case dict:find(clean, riak_object:get_update_metadata(RObj)) of
-              {ok, true} ->
-                  %% There have been no changes to updatemetadata. If we stash the
-                  %% last modified in this dict, it will cause us to lose existing
-                  %% metadata (bz://508). If there is only one instance of metadata,
-                  %% we can safely update that one, but in the case of multiple siblings,
-                  %% it's hard to know which one to use. In that situation, use the update
-                  %% metadata as is.
-                  case riak_object:get_metadatas(RObj) of
-                      [MD] ->
-                          MD;
-                      _ ->
-                          riak_object:get_update_metadata(RObj)
-                  end;
-               _ ->
-                  riak_object:get_update_metadata(RObj)
-          end,
-    %% Post-0.14.2 changed vtags to be generated from node/now rather the vclocks.
-    %% The vclock has not been updated at this point.  Vtags/etags should really
-    %% be an external interface concern and are only used for sibling selection
-    %% and if-modified type tests so they could be generated on retrieval instead.
-    %% This changes from being a hash on the value to a likely-to-be-unique value
-    %% which should serve the same purpose.  It was possible to generate two
-    %% objects with the same vclock on 0.14.2 if the same clientid was used in
-    %% the same second.  It can be revisited post-1.0.0.
-    Now = os:timestamp(),
-    NewMD = dict:store(?MD_VTAG, riak_kv_util:make_vtag(Now),
-                       dict:store(?MD_LASTMOD, Now, MD0)),
-    riak_object:update_metadata(RObj, NewMD).
 
 %% Invokes the hook and returns a tuple of
 %% {Lang, Called, Result}

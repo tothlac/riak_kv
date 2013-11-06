@@ -69,10 +69,11 @@
          handle_info/2]).
 
 -export([handoff_data_encoding_method/0]).
+-export([set_vnode_forwarding/2]).
 
 -include_lib("riak_kv_vnode.hrl").
 -include_lib("riak_kv_map_phase.hrl").
--include_lib("riak_core/include/riak_core_pb.hrl").
+-include_lib("riak_core_pb.hrl").
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
@@ -104,6 +105,8 @@
                 key_buf_size :: pos_integer(),
                 async_folding :: boolean(),
                 in_handoff = false :: boolean(),
+                handoff_target :: node(),
+                forward :: node() | [{integer(), node()}],
                 hashtrees :: pid() }).
 
 -type index_op() :: add | remove.
@@ -787,14 +790,14 @@ request_hash(?KV_DELETE_REQ{bkey=BKey}) ->
 request_hash(_Req) ->
     undefined.
 
-handoff_starting(_TargetNode, State) ->
-    {true, State#state{in_handoff=true}}.
+handoff_starting({_HOType, TargetNode}, State) ->
+    {true, State#state{in_handoff=true, handoff_target=TargetNode}}.
 
 handoff_cancelled(State) ->
-    {ok, State#state{in_handoff=false}}.
+    {ok, State#state{in_handoff=false, handoff_target=undefined}}.
 
 handoff_finished(_TargetNode, State) ->
-    {ok, State}.
+    {ok, State#state{in_handoff=false, handoff_target=undefined}}.
 
 handle_handoff_data(BinObj, State) ->
     try
@@ -828,6 +831,9 @@ encode_handoff_item({B, K}, V) ->
                           [Error,Reason]),
             corrupted
     end.
+
+set_vnode_forwarding(Forward, State) ->
+    State#state{forward=Forward}.
 
 is_empty(State=#state{mod=Mod, modstate=ModState}) ->
     IsEmpty = Mod:is_empty(ModState),
@@ -868,6 +874,71 @@ delete(State=#state{idx=Index,mod=Mod, modstate=ModState}) ->
 terminate(_Reason, #state{mod=Mod, modstate=ModState}) ->
     Mod:stop(ModState),
     ok.
+
+handle_info({ensemble_get, Key, From}, State=#state{idx=Idx, forward=Fwd}) ->
+    case Fwd of
+        undefined ->
+            {reply, {r, Retval, _, _}, State2} = do_get(undefined, Key, undefined, State),
+            Reply = case Retval of
+                        {ok, Obj} ->
+                            Obj;
+                        _ ->
+                            notfound
+                    end,
+            riak_kv_ensemble_backend:reply(From, Reply),
+            {ok, State2};
+        Fwd when is_atom(Fwd) ->
+            forward_get({Idx, Fwd}, Key, From),
+            {ok, State}
+    end;
+
+handle_info({ensemble_put, Key, Obj, From}, State=#state{handoff_target=HOTarget,
+                                                         idx=Idx,
+                                                         forward=Fwd}) ->
+    case Fwd of
+        undefined ->
+            {Result, State2} = actual_put(Key, Obj, Obj, [], false, undefined, State),
+            Reply = case Result of
+                        {dw, _Idx, _Obj, _ReqID} ->
+                            Obj;
+                        {dw, _Idx, _ReqID} ->
+                            Obj;
+                        {fail, _Idx, _ReqID} ->
+                            failed
+                    end,
+            ((Reply =/= failed) and (HOTarget =/= undefined)) andalso raw_put(HOTarget, Key, Obj),
+            riak_kv_ensemble_backend:reply(From, Reply),
+            {ok, State2};
+        Fwd when is_atom(Fwd) ->
+            forward_put({Idx, Fwd}, Key, Obj, From),
+            {ok, State}
+    end;
+
+handle_info({raw_forward_put, Key, Obj, From}, State) ->
+    {Result, State2} = actual_put(Key, Obj, Obj, [], false, undefined, State),
+    Reply = case Result of
+                {dw, _Idx, _Obj, _ReqID} ->
+                    Obj;
+                {dw, _Idx, _ReqID} ->
+                    Obj;
+                {fail, _Idx, _ReqID} ->
+                    failed
+            end,
+    riak_kv_ensemble_backend:reply(From, Reply),
+    {ok, State2};
+handle_info({raw_forward_get, Key, From}, State) ->
+    {reply, {r, Retval, _, _}, State2} = do_get(undefined, Key, undefined, State),
+    Reply = case Retval of
+                {ok, Obj} ->
+                    Obj;
+                _ ->
+                    notfound
+            end,
+    riak_kv_ensemble_backend:reply(From, Reply),
+    {ok, State2};
+handle_info({raw_put, Key, Obj}, State) ->
+    {_, State2} = actual_put(Key, Obj, Obj, [], false, undefined, State),
+    {ok, State2};
 
 handle_info(retry_create_hashtree, State=#state{hashtrees=undefined}) ->
     State2 = maybe_create_hashtrees(State),
@@ -913,6 +984,25 @@ handle_exit(_Pid, Reason, State) ->
     {stop, linked_process_crash, State}.
 
 %% @private
+forward_put({Idx, Node}, Key, Obj, From) ->
+    Proxy = riak_core_vnode_proxy:reg_name(riak_kv_vnode, Idx, Node),
+    riak_core_send_msg:bang_unreliable(Proxy, {raw_forward_put, Key, Obj, From}),
+    ok.
+
+%% @private
+forward_get({Idx, Node}, Key, From) ->
+    Proxy = riak_core_vnode_proxy:reg_name(riak_kv_vnode, Idx, Node),
+    riak_core_send_msg:bang_unreliable(Proxy, {raw_forward_get, Key, From}),
+    ok.
+
+%% @private
+raw_put({Idx, Node}, Key, Obj) ->
+    Proxy = riak_core_vnode_proxy:reg_name(riak_kv_vnode, Idx, Node),
+    %% Note: This cannot be bang_unreliable. Don't change.
+    Proxy ! {raw_put, Key, Obj},
+    ok.
+
+%% @private
 %% upon receipt of a client-initiated put
 do_put(Sender, {Bucket,_Key}=BKey, RObj, ReqID, StartTime, Options, State) ->
     case proplists:get_value(bucket_props, Options) of
@@ -928,7 +1018,7 @@ do_put(Sender, {Bucket,_Key}=BKey, RObj, ReqID, StartTime, Options, State) ->
             PruneTime = StartTime
     end,
     Coord = proplists:get_value(coord, Options, false),
-    CRDTOp = proplists:get_value(crdt_op, Options, undefined),
+    CRDTOp = proplists:get_value(counter_op, Options, proplists:get_value(crdt_op, Options, undefined)),
     PutArgs = #putargs{returnbody=proplists:get_value(returnbody,Options,false) orelse Coord,
                        coord=Coord,
                        lww=proplists:get_value(last_write_wins, BProps, false),
@@ -1102,22 +1192,26 @@ perform_put({false, _Obj},
                      reqid=ReqId}) ->
     {{dw, Idx, ReqId}, State};
 perform_put({true, Obj},
-            #state{idx=Idx,
-                   mod=Mod,
-                   modstate=ModState}=State,
+            State,
             #putargs{returnbody=RB,
-                     bkey={Bucket, Key},
+                     bkey=BKey,
                      bprops=BProps,
                      reqid=ReqID,
                      index_specs=IndexSpecs}) ->
     {Obj2, Fake} = riak_kv_mutator:mutate_put(Obj, BProps),
-    case encode_and_put(Obj2, Mod, Bucket, Key, IndexSpecs, ModState) of
+    {Reply, State2} = actual_put(BKey, Obj2, Fake, IndexSpecs, RB, ReqID, State),
+    {Reply, State2}.
+
+actual_put({Bucket, Key}, Obj, MaybeFake, IndexSpecs, RB, ReqID, State=#state{idx=Idx,
+                                                                              mod=Mod,
+                                                                              modstate=ModState}) ->
+    case encode_and_put(Obj, Mod, Bucket, Key, IndexSpecs, ModState) of
         {{ok, UpdModState}, EncodedVal} ->
             update_hashtree(Bucket, Key, EncodedVal, State),
             ?INDEX(Obj, put, Idx),
             case RB of
                 true ->
-                    Reply = {dw, Idx, Fake, ReqID};
+                    Reply = {dw, Idx, MaybeFake, ReqID};
                 false ->
                     Reply = {dw, Idx, ReqID}
             end;
@@ -1179,7 +1273,7 @@ put_merge(false, true, _CurObj, UpdObj, _VId, _StartTime) -> % coord=false, LWW=
     {newobj, UpdObj};
 put_merge(false, false, CurObj, UpdObj, _VId, _StartTime) -> % coord=false, LWW=false
     ResObj = riak_object:syntactic_merge(CurObj, UpdObj),
-    case ResObj =:= CurObj of
+    case riak_object:equal(ResObj, CurObj) of
         true ->
             {oldobj, CurObj};
         false ->
@@ -1244,10 +1338,20 @@ do_get_binary(Bucket, Key, Mod, ModState) ->
 do_get_object(Bucket, Key, Mod, ModState) ->
     case uses_r_object(Mod, ModState, Bucket) of
         true ->
+            %% Non binary returns do not trigger size warnings
             Mod:get_object(Bucket, Key, false, ModState);
         false ->
             case do_get_binary(Bucket, Key, Mod, ModState) of
                 {ok, ObjBin, _UpdModState} ->
+                    BinSize = size(ObjBin),
+                    WarnSize = app_helper:get_env(riak_kv, warn_object_size),
+                    case BinSize > WarnSize of
+                        true ->
+                            lager:warning("Read large object ~p/~p (~p bytes)",
+                                          [Bucket, Key, BinSize]);
+                        false ->
+                            ok
+                    end,
                     try
                         case riak_object:from_binary(Bucket, Key, ObjBin) of
                             {error, Reason} ->
@@ -1753,13 +1857,55 @@ return_encoded_binary_object(Method, EncodedObject) ->
            {{error, Reason::term(), UpdModState::term()}, EncodedObj::binary()}.
 
 encode_and_put(Obj, Mod, Bucket, Key, IndexSpecs, ModState) ->
+    NumSiblings = riak_object:value_count(Obj),
+    case NumSiblings > app_helper:get_env(riak_kv, max_siblings) of
+        true ->
+            lager:error("Too many siblings for object ~p/~p (~p)",
+                        [Bucket, Key, NumSiblings]),
+            {{error, {too_many_siblings, NumSiblings}, ModState},
+             undefined};
+        false ->
+            case NumSiblings > app_helper:get_env(riak_kv, warn_siblings) of
+                true ->
+                    lager:warning("Too many siblings for object ~p/~p (~p)",
+                                  [Bucket, Key, NumSiblings]);
+                false ->
+                    ok
+            end,
+            encode_and_put_no_sib_check(Obj, Mod, Bucket, Key, IndexSpecs, ModState)
+    end.
+
+encode_and_put_no_sib_check(Obj, Mod, Bucket, Key, IndexSpecs, ModState) ->
     case uses_r_object(Mod, ModState, Bucket) of
         true ->
+            %% Non binary returning backends will have to handle size warnings
+            %% and errors themselves.
             Mod:put_object(Bucket, Key, IndexSpecs, Obj, ModState);
         false ->
             ObjFmt = riak_core_capability:get({riak_kv, object_format}, v0),
             EncodedVal = riak_object:to_binary(ObjFmt, Obj),
-            {Mod:put(Bucket, Key, IndexSpecs, EncodedVal, ModState), EncodedVal}
+            BinSize = size(EncodedVal),
+            %% Report or fail on large objects
+            case BinSize > app_helper:get_env(riak_kv, max_object_size) of
+                true ->
+                    lager:error("Object too large to write: ~p/~p ~p bytes",
+                                [Bucket, Key, BinSize]),
+                    {{error, {too_large, BinSize}, ModState},
+                     EncodedVal};
+                false ->
+                    WarnSize = app_helper:get_env(riak_kv, warn_object_size),
+                    case BinSize > WarnSize of
+                       true ->
+                            lager:warning("Writing very large object " ++
+                                          "(~p bytes) to ~p/~p",
+                                          [BinSize, Bucket, Key]);
+                        false ->
+                            ok
+                    end,
+                    PutRet = Mod:put(Bucket, Key, IndexSpecs, EncodedVal,
+                                     ModState),
+                    {PutRet, EncodedVal}
+            end
     end.
 
 uses_r_object(Mod, ModState, Bucket) ->
