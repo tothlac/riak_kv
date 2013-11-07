@@ -78,7 +78,7 @@
 -export([index_specs/1, diff_index_specs/2]).
 -export([to_binary/2, from_binary/3, to_binary_version/4, binary_version/1]).
 -export([set_contents/2, set_vclock/2]). %% INTERNAL, only for riak_*
--export([merge_vclocks/2]). %% INTERNAL, only for riak_kv
+-export([update_vclock/3]). %% INTERNAL, only for riak_kv
 -export([is_robject/1]).
 -export([update_last_modified/1]).
 
@@ -401,10 +401,12 @@ update_causal_history(RObj, Actor) ->
     RObj#r_object{contents=[C#r_content{metadata=dict:store(?DOT, Dot, Meta0)}]}.
 
 %% @doc when you want to create a frontier object, merges a vnode
-%% clock with an object clock.
--spec merge_vclocks(riak_object(), vclock:vclock()) -> riak_object().
-merge_vclocks(Obj=#r_object{}, Vclock) ->
-    Obj#r_object{vclock=vclock:merge([Vclock, Obj#r_object.vclock])}.
+%% clock with an object clock. Adds a dot to the value. Must only be
+%% called on a put.
+-spec update_vclock(riak_object(), vclock:vclock_node(), vclock:vclock()) -> riak_object().
+update_vclock(RObj=#r_object{}, Actor, Vclock) ->
+    RObj2 = RObj#r_object{vclock=vclock:merge([Vclock, RObj#r_object.vclock])},
+    update_causal_history(RObj2, Actor).
 
 %% @doc Prepare a list of index specifications
 %% to pass to the backend. This function is for

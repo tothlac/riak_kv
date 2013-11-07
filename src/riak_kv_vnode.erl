@@ -1180,10 +1180,10 @@ prepare_put(#state{vnodeid=VId,
 %% has already written this key. See riak_kv#679 for more.
 prepare_new_put(true, RObj, VId, Counter, StartTime, undefined) ->
     VNodeClock = vclock:fresh(VId, Counter, StartTime),
-    riak_object:merge_vclocks(RObj, VNodeClock);
+    riak_object:update_vclock(RObj, VId, VNodeClock);
 prepare_new_put(true, RObj, VId, Counter, StartTime, CRDTOp) ->
     VNodeClock = vclock:fresh(VId, Counter, StartTime),
-    VClockUp = riak_object:merge_vclocks(RObj, VNodeClock),
+    VClockUp = riak_object:update_vclock(RObj, VId, VNodeClock),
     %% coordinating a _NEW_ crdt operation means
     %% creating + updating the crdt.
     %% Make a new crdt, stuff it in the riak_object
