@@ -193,7 +193,7 @@ prepare(timeout, StateData=#state{bkey=BKey={Bucket,_Key},
     BucketProps = riak_core_bucket:get_bucket(Bucket),
     Props = lists:keymerge(1, lists:keysort(1, BucketProps), 
                            lists:keysort(1, DefaultProps)),
-    DocIdx = riak_core_util:chash_key(BKey),
+    DocIdx = riak_core_util:chash_key(BKey, BucketProps),
     {_, Bucket_N} = lists:keyfind(n_val, 1, Props),
     N = case lists:keyfind(n_val, 1, Options) of
             false ->
