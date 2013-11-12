@@ -36,6 +36,8 @@
          readrepair/6,
          list_keys/4,
          fold/3,
+         fold_indexes/3,
+         verify_2i/1,
          get_vclocks/2,
          vnode_status/1,
          ack_keys/1,
@@ -216,6 +218,43 @@ local_get(Index, BKey) ->
             Result;
         {Ref, Reply} ->
             {error, Reply}
+    end.
+
+fold_indexes(Index, Fun, Acc) ->
+    Ref = make_ref(),
+    Sender = {raw, Ref, self()},
+    riak_core_vnode_master:command({Index, node()},
+                                   {fold_indexes, Fun, Acc},
+                                   Sender,
+                                   riak_kv_vnode_master),
+    receive
+        {Ref, Result} ->
+            Result
+    end.
+
+verify_2i(Index) ->
+    Fun = fun(Bucket, Key, Field, Term, Acc) ->
+                  dict:append({Bucket, Key}, {Field, Term}, Acc)
+          end,
+    IndexSpecs = fold_indexes(Index, Fun, dict:new()),
+    case dict:size(IndexSpecs) of
+        0 ->
+            ok;
+        _ ->
+            TreeId = <<0:176/integer>>,
+            Path = "/tmp/2i_aae/" ++ integer_to_list(Index),
+            Tree = hashtree:new({Index, TreeId}, [{segment_path, Path}]),
+    %% State2 = do_insert(IndexN, term_to_binary(BKey), hash_object(BKey, RObj), [], Sta
+            Tree2 =
+                dict:fold(fun(BKey, Indexes, TreeAcc) ->
+                                  Sorted = lists:sort(Indexes),
+                                  %% Hash = crypto:hash(sha, term_to_binary(Sorted)),
+                                  Hash = crypto:sha(term_to_binary(Sorted)),
+                                  HashKey = term_to_binary(BKey),
+                                  hashtree:insert(HashKey, Hash, TreeAcc, [])
+                          end, Tree, IndexSpecs),
+            hashtree:close(Tree2),
+            hashtree:destroy(Tree2)
     end.
 
 %% Issue a put for the object to the preflist, expecting a reply
@@ -501,6 +540,14 @@ handle_command({rehash, Bucket, Key}, _, State=#state{mod=Mod, modstate=ModState
             riak_kv_index_hashtree:delete({Bucket, Key}, State#state.hashtrees)
     end,
     {noreply, State};
+
+handle_command({fold_indexes, FoldIndexFun, Acc}, Sender, State=#state{mod=Mod, modstate=ModState}) ->
+    {async, AsyncWork} = Mod:fold_indexes(FoldIndexFun, Acc, [], ModState),
+    FinishFun = fun(FinalAcc) ->
+                        io:format("finish~n"),
+                        riak_core_vnode:reply(Sender, FinalAcc)
+                end,
+    {async, {fold, AsyncWork, FinishFun}, Sender, State};
 
 %% Commands originating from inside this vnode
 handle_command({backend_callback, Ref, Msg}, _Sender,

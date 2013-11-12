@@ -40,6 +40,7 @@
          fold_buckets/4,
          fold_keys/4,
          fold_objects/4,
+         fold_indexes/4,
          is_empty/1,
          status/1,
          callback/3]).
@@ -58,7 +59,7 @@
 -endif.
 
 -define(API_VERSION, 1).
--define(CAPABILITIES, [async_fold, indexes, index_reformat, size]).
+-define(CAPABILITIES, [async_fold, indexes, index_reformat, index_fold, size]).
 -define(FIXED_INDEXES_KEY, fixed_indexes).
 
 -record(state, {ref :: reference(),
@@ -394,6 +395,33 @@ fold_keys(FoldKeysFun, Acc, Opts, #state{fold_opts=FoldOpts,
             {async, KeyFolder};
         false ->
             {ok, KeyFolder()}
+    end.
+
+fold_indexes(FoldIndexFun, Acc, _Opts, #state{fold_opts=FoldOpts,
+                                              ref=Ref}) ->
+    FirstKey = to_index_key(<<>>, <<>>, <<>>, <<>>),
+    FoldOpts1 = [{first_key, FirstKey} | FoldOpts],
+    FoldFun = fold_indexes_fun(FoldIndexFun),
+    KeyFolder =
+        fun() ->
+                %% Do the fold. ELevelDB uses throw/1 to break out of a fold...
+                try
+                    eleveldb:fold_keys(Ref, FoldFun, Acc, FoldOpts1)
+                catch
+                    {break, BrkResult} ->
+                        BrkResult
+                end
+        end,
+    {async, KeyFolder}.
+
+fold_indexes_fun(FoldIndexFun) ->
+    fun(StorageKey, Acc) ->
+            case from_index_key(StorageKey) of
+                {Bucket, Key, Field, Term} ->
+                    FoldIndexFun(Bucket, Key, Field, Term, Acc);
+                _ ->
+                    throw({break, Acc})
+            end
     end.
 
 legacy_key_fold(Ref, FoldFun, Acc, FoldOpts0, Query={index, _, _}) ->
