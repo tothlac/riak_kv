@@ -1179,11 +1179,14 @@ prepare_put(#state{vnodeid=VId,
 %% reason there is notfound getting from local storage, but this vnode
 %% has already written this key. See riak_kv#679 for more.
 prepare_new_put(true, RObj, VId, Counter, StartTime, undefined) ->
-    VNodeClock = vclock:fresh(VId, Counter, StartTime),
-    riak_object:merge_vclocks(RObj, VNodeClock);
+    %% TODO, when it comes time to increment this clock we'll need the
+    %% highest actor somehow (get actors, match on all that are us,
+    %% pick the highest epoch?)
+    NewVId = <<VId/binary, Counter:32/integer>>,
+    riak_object:increment_vclock(RObj, NewVId, StartTime);
 prepare_new_put(true, RObj, VId, Counter, StartTime, CRDTOp) ->
-    VNodeClock = vclock:fresh(VId, Counter, StartTime),
-    VClockUp = riak_object:merge_vclocks(RObj, VNodeClock),
+    NewVId = <<VId/binary, Counter:32/integer>>,
+    VClockUp = riak_object:increment_vclock(RObj, NewVId, StartTime),
     %% coordinating a _NEW_ crdt operation means
     %% creating + updating the crdt.
     %% Make a new crdt, stuff it in the riak_object
@@ -1304,11 +1307,12 @@ put_merge(true, true, _CurObj, UpdObj, VId, StartTime) -> % coord=true, LWW=true
     {newobj, riak_object:increment_vclock(UpdObj, VId, StartTime)};
 put_merge(true, false, CurObj, UpdObj, VId, StartTime) ->
     UpdObj1 = riak_object:increment_vclock(UpdObj, VId, StartTime),
+    Actor = riak_object:get_actor(UpdObj1, VId),
     UpdVC = riak_object:vclock(UpdObj1),
     CurVC = riak_object:vclock(CurObj),
 
     %% Check the coord put will replace the existing object
-    case vclock:get_counter(VId, UpdVC) > vclock:get_counter(VId, CurVC) andalso
+    case vclock:get_counter(Actor, UpdVC) > vclock:get_counter(Actor, CurVC) andalso
         vclock:descends(CurVC, UpdVC) == false andalso
         vclock:descends(UpdVC, CurVC) == true of
         true ->
@@ -1316,7 +1320,7 @@ put_merge(true, false, CurObj, UpdObj, VId, StartTime) ->
         false ->
             %% If not, make sure it does
             {newobj, riak_object:increment_vclock(
-                       riak_object:merge(CurObj, UpdObj1), VId, StartTime)}
+                       riak_object:merge(CurObj, UpdObj1), Actor, StartTime)}
     end.
 
 %% @private

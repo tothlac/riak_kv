@@ -29,6 +29,7 @@
 -include("riak_kv_wm_raw.hrl").
 
 -export_type([riak_object/0, bucket/0, key/0, value/0, binary_version/0]).
+-compile([export_all]).
 
 -type key() :: binary().
 -type bucket() :: binary() | {binary(), binary()}.
@@ -370,12 +371,51 @@ set_vclock(Object=#r_object{}, VClock) -> Object#r_object{vclock=VClock}.
 -spec increment_vclock(riak_object(), vclock:vclock_node()) -> riak_object().
 %% @spec increment_vclock(riak_object(), vclock:vclock_node()) -> riak_object()
 increment_vclock(Object=#r_object{}, ClientId) ->
-    Object#r_object{vclock=vclock:increment(ClientId, Object#r_object.vclock)}.
+    %% @HACK get all actors that match ClientId
+    %% increment the highest one
+    Nodes = vclock:all_nodes(Object#r_object.vclock),
+    Actor = highest(ClientId, Nodes),
+    Object#r_object{vclock=vclock:increment(Actor, Object#r_object.vclock)}.
 
 %% @doc  Increment the entry for ClientId in O's vclock.
 -spec increment_vclock(riak_object(), vclock:vclock_node(), vclock:timestamp()) -> riak_object().
 increment_vclock(Object=#r_object{}, ClientId, Timestamp) ->
-    Object#r_object{vclock=vclock:increment(ClientId, Timestamp, Object#r_object.vclock)}.
+    %% @HACK get all actors that match ClientId
+    %% increment the highest one
+    Nodes = vclock:all_nodes(Object#r_object.vclock),
+    Actor = highest(ClientId, Nodes),
+    Object#r_object{vclock=vclock:increment(Actor, Timestamp, Object#r_object.vclock)}.
+
+get_actor(Object, ClientId) ->
+    Nodes = vclock:all_nodes(Object#r_object.vclock),
+    highest(ClientId, Nodes).
+
+highest(Actor, []) ->
+    Actor;
+highest(Highest0, [Candidate | Rest]) ->
+    Highest = highest_actor(Highest0, Candidate),
+    highest(Highest, Rest).
+
+highest_actor(A, A) ->
+    A;
+highest_actor(<<ID:8/bytes, Rest/binary>>=A, <<ID:8/bytes, Rest2/binary>>=B) ->
+    case higher_epoch(Rest, Rest2) of
+        Rest ->
+            A;
+        Rest2 ->
+            B
+    end;
+highest_actor(A, _B) ->
+    A.
+
+higher_epoch(<<>>, <<>>) ->
+    <<>>;
+higher_epoch(<<>>, B) ->
+    B;
+higher_epoch(A, <<>>) ->
+    A;
+higher_epoch(<<A:32/integer>>, <<B:32/integer>>) ->
+    <<(max(A, B)):32/integer>>.
 
 %% @doc when you want to create a frontier object, merges a vnode
 %% clock with an object clock.
