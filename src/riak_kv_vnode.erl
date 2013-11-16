@@ -1307,7 +1307,9 @@ put_merge(true, true, _CurObj, UpdObj, VId, StartTime) -> % coord=true, LWW=true
     {newobj, riak_object:increment_vclock(UpdObj, VId, StartTime)};
 put_merge(true, false, CurObj, UpdObj, VId, StartTime) ->
     UpdObj1 = riak_object:increment_vclock(UpdObj, VId, StartTime),
-    Actor = riak_object:get_actor(UpdObj1, VId),
+    UActor = riak_object:get_actor(UpdObj1, VId),
+    CActor = riak_object:get_actor(CurObj, VId),
+    Actor = riak_object:highest_actor(UActor, CActor),
     UpdVC = riak_object:vclock(UpdObj1),
     CurVC = riak_object:vclock(CurObj),
 
