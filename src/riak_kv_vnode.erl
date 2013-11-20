@@ -89,6 +89,12 @@
 -define(INDEX(Obj, Reason, Partition), yz_kv:index(Obj, Reason, Partition)).
 -endif.
 
+-ifdef(TEST).
+-define(YZ_SHOULD_HANDOFF(X), true).
+-else.
+-define(YZ_SHOULD_HANDOFF(X), yz_kv:should_handoff(X)).
+-endif.
+
 -record(mrjob, {cachekey :: term(),
                 bkey :: term(),
                 reqid :: term(),
@@ -790,8 +796,13 @@ request_hash(?KV_DELETE_REQ{bkey=BKey}) ->
 request_hash(_Req) ->
     undefined.
 
-handoff_starting({_HOType, TargetNode}, State) ->
-    {true, State#state{in_handoff=true, handoff_target=TargetNode}}.
+handoff_starting({_HOType, TargetNode}=_X, State) ->
+    case ?YZ_SHOULD_HANDOFF(_X) of
+        true ->
+            {true, State#state{in_handoff=true, handoff_target=TargetNode}};
+        false ->
+            {false, State#state{in_handoff=false, handoff_target=undefined}}
+    end.
 
 handoff_cancelled(State) ->
     {ok, State#state{in_handoff=false, handoff_target=undefined}}.
@@ -1198,7 +1209,16 @@ perform_put({true, Obj},
                      bprops=BProps,
                      reqid=ReqID,
                      index_specs=IndexSpecs}) ->
-    {Obj2, Fake} = riak_kv_mutator:mutate_put(Obj, BProps),
+
+    %% Avoid the riak_kv_mutator code path is no mutators are
+    %% registered.
+    {Obj2, Fake} = case riak_kv_mutator:get() of
+        {ok, []} ->
+            {Obj, Obj};
+        {ok, Mutators} ->
+            riak_kv_mutator:mutate_put(Obj, BProps, Mutators)
+    end,
+
     {Reply, State2} = actual_put(BKey, Obj2, Fake, IndexSpecs, RB, ReqID, State),
     {Reply, State2}.
 

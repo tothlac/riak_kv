@@ -19,18 +19,22 @@
 }.
 
 %% Riak KV config
-%% @doc Storage_backend specifies the Erlang module defining the storage
-%% mechanism that will be used on this node.
+
+%% @doc storage_backend specifies the engine used for Riak's key-value
+%% data and secondary indexes (if supported). Note the 'yessir' option
+%% is for testing only.
+%%
+%% Valid values are:
+%%    bitcask, leveldb, memory, yessir, multi
 {mapping, "storage_backend", "riak_kv.storage_backend", [
   {default, {{storage_backend}} },
-  {default, bitcask},
   {datatype, {enum, [bitcask, leveldb, memory, yessir, multi]}}
 ]}.
 
 { translation,
   "riak_kv.storage_backend",
   fun(Conf) ->
-    Setting = cuttlefish_util:conf_get_value("storage_backend", Conf), 
+    Setting = cuttlefish_util:conf_get_value("storage_backend", Conf),
     case Setting of
       bitcask -> riak_kv_bitcask_backend;
       leveldb -> riak_kv_eleveldb_backend;
@@ -284,4 +288,52 @@
   {datatype, {duration, s}},
   {commented, "1d"}, %% no default, it's undefined.
   {level, advanced}
+]}.
+
+%% @doc Measures were added to Riak 1.2 to counteract cross-site scripting 
+%% and request-forgery attacks. Some reverse-proxies cannot remove the Referer 
+%% header and makes serving data directly from Riak impossible. Turning
+%% secure_referer_check = off disables this security check
+{mapping, "secure_referer_check", "riak_kv.secure_referer_check", [
+  {datatype, {enum, [on, off]}},
+  {default, on},
+  {level, advanced}
+]}.
+
+{translation,
+ "riak_kv.secure_referer_check",
+ fun(Conf) ->
+  case cuttlefish_util:conf_get_value("secure_referer_check", Conf) of
+    off -> false;
+    on -> true;
+    _ -> true
+  end
+ end
+}.
+
+%% @doc Reading or writing objects bigger than this size will write
+%% a warning in the logs.
+{mapping, "warn_object_size", "riak_kv.warn_object_size", [
+  {datatype, bytesize},
+  {default, "5MB"}
+]}.
+
+%% @doc Writing an object bigger than this will fail.
+{mapping, "max_object_size", "riak_kv.max_object_size", [
+  {datatype, bytesize},
+  {default, "50MB"}
+]}.
+
+%% @doc Writing an object with more than this number of siblings
+%% will generate a warning in the logs.
+{mapping, "warn_siblings", "riak_kv.warn_siblings", [
+  {datatype, integer},
+  {default, 25}
+]}.
+
+%% @doc Writing an object with more than this number of siblings
+%% will fail.
+{mapping, "max_siblings", "riak_kv.max_siblings", [
+  {datatype, integer},
+  {default, 100}
 ]}.
