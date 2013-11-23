@@ -367,8 +367,7 @@ md5(Bin) ->
 -spec make_vtag(erlang:timestamp()) -> list().
 make_vtag(Now) ->
     <<HashAsNum:128/integer>> = md5(term_to_binary({node(), Now})),
-%5    HashAsNum.
-riak_core_util:integer_to_list(HashAsNum,62).
+    riak_core_util:integer_to_list(HashAsNum,62).
 
 overload_reply({raw, ReqId, Pid}) ->
     Pid ! {ReqId, {error, overload}};
