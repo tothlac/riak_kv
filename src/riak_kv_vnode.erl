@@ -543,6 +543,7 @@ handle_command({refresh_index_data, BKey, OldIdxData}, Sender,
             {Reply, UpModState} = 
             case Mod:put(Bucket, Key, IndexSpecs, undefined, ModState) of
                 {ok, ModState2} ->
+                    riak_kv_stat:update(vnode_index_refresh),
                     {ok, ModState2};
                 {error, Reason, ModState2} ->
                     {{error, Reason}, ModState2}
